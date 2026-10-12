@@ -1,0 +1,69 @@
+name: Build unsigned IPA
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+jobs:
+  build:
+    runs-on: macos-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+
+      - name: Patch app.json (bundle id, iPad, http allowed)
+        run: |
+          node -e "
+          const fs=require('fs');
+          const j=JSON.parse(fs.readFileSync('app.json','utf8'));
+          const e=j.expo;
+          e.name='Pano';
+          e.ios=Object.assign({},e.ios,{
+            supportsTablet:true,
+            bundleIdentifier:'com.pano.panel',
+            infoPlist:Object.assign({},(e.ios||{}).infoPlist,{
+              NSAppTransportSecurity:{NSAllowsArbitraryLoads:true},
+              NSLocalNetworkUsageDescription:'Pano, ag uzerindeki panel sunucusuna baglanir.'
+            })
+          });
+          fs.writeFileSync('app.json',JSON.stringify(j,null,2));
+          "
+
+      - name: Generate native iOS project
+        run: npx expo prebuild --platform ios --no-install
+
+      - name: Install pods
+        working-directory: ios
+        run: pod install
+
+      - name: Build (no code signing)
+        working-directory: ios
+        run: |
+          WS=$(ls -d *.xcworkspace | head -n1)
+          SCHEME="${WS%.xcworkspace}"
+          xcodebuild -workspace "$WS" -scheme "$SCHEME" \
+            -configuration Release -sdk iphoneos \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
+            clean build | tail -n 60
+
+      - name: Package IPA
+        run: |
+          APP=$(find ios/build/Build/Products/Release-iphoneos -maxdepth 1 -name "*.app" | head -n1)
+          echo "App: $APP"
+          mkdir -p Payload
+          cp -R "$APP" Payload/
+          zip -qry Pano.ipa Payload
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Pano-ipa
+          path: Pano.ipa
